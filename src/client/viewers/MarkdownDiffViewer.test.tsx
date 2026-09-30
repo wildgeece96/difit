@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import mermaid from 'mermaid';
 
@@ -381,7 +381,8 @@ describe('MarkdownDiffViewer', () => {
       text: async () => '```mermaid\ngraph TD\n  A --> B\n```',
     });
 
-    renderViewer();
+    // Start in the code diff so the one-time render failure is spent on Full Preview.
+    renderViewer({ markdownPreviewMode: 'diff' });
 
     const fullPreviewButton = await screen.findByRole('button', {
       name: 'Full Preview',
@@ -516,6 +517,54 @@ describe('MarkdownDiffViewer two-side fetch', () => {
     });
 
     expect(global.fetch).toHaveBeenCalledTimes(0);
+  });
+
+  it('opens in Split Preview with the before and after documents side by side', async () => {
+    (global.fetch as any).mockImplementation(async (url: string) => ({
+      ok: true,
+      text: async () => (url.endsWith('HEAD~1') ? 'Old paragraph' : 'New paragraph'),
+    }));
+
+    renderViewer();
+
+    const preview = await screen.findByTestId('markdown-split-preview');
+    expect(within(preview).getByText('Old paragraph')).toBeInTheDocument();
+    expect(within(preview).getByText('New paragraph')).toBeInTheDocument();
+  });
+
+  it('shows the mode the host passes and reports tab changes back to it', async () => {
+    (global.fetch as any).mockResolvedValue({ ok: true, text: async () => '# Title' });
+    const onMarkdownPreviewModeChange = vi.fn();
+
+    renderViewer({ markdownPreviewMode: 'diff', onMarkdownPreviewModeChange });
+    await waitFor(() => expect(global.fetch).toHaveBeenCalledTimes(2));
+    expect(screen.queryByTestId('markdown-split-preview')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Split Preview' }));
+    expect(onMarkdownPreviewModeChange).toHaveBeenCalledWith('split-preview');
+  });
+
+  it('falls back to the code diff and hides Split Preview for stdin diffs', async () => {
+    renderViewer({ baseCommitish: 'stdin', targetCommitish: 'stdin' });
+
+    expect(screen.queryByRole('button', { name: 'Split Preview' })).not.toBeInTheDocument();
+    expect(screen.queryByTestId('markdown-split-preview')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Diff' })).toBeInTheDocument();
+  });
+
+  it('refetches the blobs when the diff is reloaded', async () => {
+    (global.fetch as any).mockResolvedValue({ ok: true, text: async () => 'Before reload' });
+    const { rerender } = renderViewer({ diffVersion: 1 });
+    await screen.findAllByText('Before reload');
+
+    (global.fetch as any).mockResolvedValue({ ok: true, text: async () => 'After reload' });
+    rerender(
+      <WordHighlightProvider>
+        <MarkdownDiffViewer {...createProps({ diffVersion: 2 })} />
+      </WordHighlightProvider>,
+    );
+
+    expect(await screen.findAllByText('After reload')).toHaveLength(2);
   });
 });
 

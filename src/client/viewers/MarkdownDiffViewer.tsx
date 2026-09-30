@@ -1,17 +1,17 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
 import type { DiffFile, DiffLine } from '../../types/diff';
 import { FrontmatterTable } from '../components/FrontmatterTable';
-import { MermaidDiagram } from '../components/MermaidDiagram';
-import { PrismSyntaxHighlighter } from '../components/PrismSyntaxHighlighter';
 import type { MergedChunk } from '../hooks/useExpandedLines';
 import { extractFrontmatter, getFrontmatterLines } from '../utils/frontmatter';
 import { computeFrontmatterDiff } from '../utils/frontmatterDiff';
-import { extractMarkdownText, isElementWithCodeProps, isSafeUrl } from '../utils/markdownUtils';
+import { isSafeUrl } from '../utils/markdownUtils';
 
-import { PreviewModeTabs, type PreviewMode } from './PreviewModeTabs';
+import { getMarkdownComponents } from './markdownComponents';
+import { MarkdownSplitPreview } from './MarkdownSplitPreview';
+import { DEFAULT_PREVIEW_MODE, PreviewModeTabs, type PreviewMode } from './PreviewModeTabs';
 import { TextDiffViewer } from './TextDiffViewer';
 import type { DiffViewerBodyProps } from './types';
 
@@ -59,15 +59,6 @@ type PreviewContents = {
   base: string | null;
   target: string | null;
 };
-
-const headingStyles = [
-  'text-[26px] font-semibold',
-  'text-[22px] font-semibold',
-  'text-xl font-semibold',
-  'text-lg font-semibold',
-  'text-base font-semibold uppercase tracking-wide',
-  'text-base font-semibold',
-];
 
 const isDeletionLine = (line: DiffLine) => line.type === 'delete' || line.type === 'remove';
 
@@ -204,133 +195,6 @@ const stripFrontmatterBlocks = (
 
   return result;
 };
-
-const getMarkdownComponents = (syntaxTheme?: DiffViewerBodyProps['syntaxTheme']) => ({
-  h1: ({ children }: { children?: React.ReactNode }) => (
-    <h1 className={`${headingStyles[0]} mt-6 mb-2 first:mt-0`}>{children}</h1>
-  ),
-  h2: ({ children }: { children?: React.ReactNode }) => (
-    <h2 className={`${headingStyles[1]} mt-6 mb-2 first:mt-0`}>{children}</h2>
-  ),
-  h3: ({ children }: { children?: React.ReactNode }) => (
-    <h3 className={`${headingStyles[2]} mt-6 mb-2 first:mt-0`}>{children}</h3>
-  ),
-  h4: ({ children }: { children?: React.ReactNode }) => (
-    <h4 className={`${headingStyles[3]} mt-6 mb-2 first:mt-0`}>{children}</h4>
-  ),
-  h5: ({ children }: { children?: React.ReactNode }) => (
-    <h5 className={`${headingStyles[4]} mt-6 mb-2 first:mt-0`}>{children}</h5>
-  ),
-  h6: ({ children }: { children?: React.ReactNode }) => (
-    <h6 className={`${headingStyles[5]} mt-6 mb-2 first:mt-0`}>{children}</h6>
-  ),
-  p: ({ children }: { children?: React.ReactNode }) => (
-    <p className="text-base leading-7">{children}</p>
-  ),
-  ul: ({ children }: { children?: React.ReactNode }) => (
-    <ul className="list-disc pl-6 text-base space-y-1">{children}</ul>
-  ),
-  ol: ({ children }: { children?: React.ReactNode }) => (
-    <ol className="list-decimal pl-6 text-base space-y-1">{children}</ol>
-  ),
-  li: ({ children }: { children?: React.ReactNode }) => <li>{children}</li>,
-  blockquote: ({ children }: { children?: React.ReactNode }) => (
-    <blockquote className="border-l-4 border-github-border pl-4 text-github-text-muted italic">
-      {children}
-    </blockquote>
-  ),
-  hr: () => <hr className="border-github-border" />,
-  a: ({ href, children }: { href?: string; children?: React.ReactNode }) => {
-    const safeHref = href ?? '';
-    if (!safeHref || !isSafeUrl(safeHref)) {
-      return <span>{children}</span>;
-    }
-    const isExternal = safeHref.startsWith('http');
-    return (
-      <a
-        href={safeHref}
-        target={isExternal ? '_blank' : undefined}
-        rel={isExternal ? 'noreferrer' : undefined}
-        className="text-sky-400 hover:text-sky-300 underline underline-offset-4"
-      >
-        {children}
-      </a>
-    );
-  },
-  img: ({ src, alt }: { src?: string; alt?: string }) => {
-    const safeSrc = src ?? '';
-    if (!safeSrc || !isSafeUrl(safeSrc)) {
-      return null;
-    }
-    return (
-      <img
-        src={safeSrc}
-        alt={alt ?? ''}
-        loading="lazy"
-        className="max-w-full rounded border border-github-border"
-      />
-    );
-  },
-  pre: ({ children }: { children?: React.ReactNode }) => {
-    const nodes = Array.isArray(children) ? children : [children];
-    const codeElement = nodes.find(isElementWithCodeProps);
-    const codeText = extractMarkdownText(codeElement ?? children);
-    const match = /language-(\S+)/.exec(codeElement?.props.className ?? '');
-    const language = match?.[1];
-    const normalizedCodeText = codeText.replace(/\n$/, '');
-
-    if (language === 'mermaid' && normalizedCodeText.trim()) {
-      return <MermaidDiagram chart={normalizedCodeText} />;
-    }
-
-    if (!codeText.trim()) {
-      return (
-        <pre className="markdown-preview-code border border-github-border bg-github-bg-secondary p-3 overflow-x-auto text-sm">
-          {children}
-        </pre>
-      );
-    }
-
-    return (
-      <pre className="markdown-preview-code border border-github-border bg-github-bg-secondary p-3 overflow-x-auto text-sm">
-        <PrismSyntaxHighlighter
-          code={normalizedCodeText}
-          language={language}
-          syntaxTheme={syntaxTheme}
-          className="font-mono text-github-text-primary"
-        />
-      </pre>
-    );
-  },
-  code: ({ className, children }: { className?: string; children?: React.ReactNode }) => {
-    if (className) {
-      return <code className={className}>{children}</code>;
-    }
-    return (
-      <code className="px-1 py-0.5 rounded bg-github-bg-tertiary border border-github-border text-sm font-mono">
-        {children}
-      </code>
-    );
-  },
-  table: ({ children }: { children?: React.ReactNode }) => (
-    <div className="overflow-x-auto">
-      <table className="w-full border-collapse text-sm">{children}</table>
-    </div>
-  ),
-  thead: ({ children }: { children?: React.ReactNode }) => (
-    <thead className="bg-github-bg-secondary">{children}</thead>
-  ),
-  tbody: ({ children }: { children?: React.ReactNode }) => <tbody>{children}</tbody>,
-  tr: ({ children }: { children?: React.ReactNode }) => (
-    <tr className="border-b border-github-border">{children}</tr>
-  ),
-  th: ({ children }: { children?: React.ReactNode }) => (
-    <th className="px-3 py-2 text-left font-semibold border border-github-border">{children}</th>
-  ),
-  td: ({ children }: { children?: React.ReactNode }) => (
-    <td className="px-3 py-2 border border-github-border">{children}</td>
-  ),
-});
 
 const getBlockStyle = (type: PreviewBlockType) => {
   switch (type) {
@@ -648,13 +512,23 @@ const MarkdownFullPreview = ({
 };
 
 export function MarkdownDiffViewer(props: DiffViewerBodyProps) {
-  const { file, baseCommitish, targetCommitish, mergedChunks, syntaxTheme } = props;
-  const [mode, setMode] = useState<PreviewMode>('diff');
+  const { file, baseCommitish, targetCommitish, mergedChunks, syntaxTheme, diffVersion } = props;
+  // App owns the remembered mode when it passes a change handler; otherwise the passed
+  // mode is only the starting tab.
+  const { markdownPreviewMode, onMarkdownPreviewModeChange } = props;
+  const [localMode, setLocalMode] = useState<PreviewMode>(
+    markdownPreviewMode ?? DEFAULT_PREVIEW_MODE,
+  );
+  const mode = onMarkdownPreviewModeChange
+    ? (markdownPreviewMode ?? DEFAULT_PREVIEW_MODE)
+    : localMode;
+  const handleModeChange = onMarkdownPreviewModeChange ?? setLocalMode;
   const [contents, setContents] = useState<PreviewContents>({ base: null, target: null });
   const [isPreviewLoading, setIsPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [partialFailureLabel, setPartialFailureLabel] = useState<string | null>(null);
-  const [loadedSourcesKey, setLoadedSourcesKey] = useState<string | null>(null);
+  const [loaded, setLoaded] = useState<{ sourcesKey: string; fetchKey: string } | null>(null);
+  const loadedSourcesKey = loaded?.sourcesKey ?? null;
   const previewBlocks = useMemo(() => buildPreviewBlocks(mergedChunks), [mergedChunks]);
   // Frontmatter can only appear in the diff when the first chunk starts at the
   // top of the file; a chunk starting mid-file must be body content even if its
@@ -693,17 +567,28 @@ export function MarkdownDiffViewer(props: DiffViewerBodyProps) {
     return `${baseKey}|${targetKey}`;
   }, [previewSources]);
 
-  useEffect(() => {
-    const baseSource =
-      previewSources.base && isFetchableRef(previewSources.base.ref) ? previewSources.base : null;
-    const targetSource =
-      previewSources.target && isFetchableRef(previewSources.target.ref)
-        ? previewSources.target
-        : null;
+  // A reload of the diff (watch mode) must refetch working-tree content even though the
+  // refs and paths are unchanged.
+  const previewFetchKey = previewSourcesKey ? `${previewSourcesKey}#${diffVersion ?? 0}` : null;
 
-    if (!previewSourcesKey || (!baseSource && !targetSource)) {
+  const fetchableSources = useMemo<PreviewSourcePair>(
+    () => ({
+      base:
+        previewSources.base && isFetchableRef(previewSources.base.ref) ? previewSources.base : null,
+      target:
+        previewSources.target && isFetchableRef(previewSources.target.ref)
+          ? previewSources.target
+          : null,
+    }),
+    [previewSources],
+  );
+
+  useEffect(() => {
+    const { base: baseSource, target: targetSource } = fetchableSources;
+
+    if (!previewSourcesKey || !previewFetchKey || (!baseSource && !targetSource)) {
       setContents({ base: null, target: null });
-      setLoadedSourcesKey(null);
+      setLoaded(null);
       setPreviewError(null);
       setPartialFailureLabel(null);
       setIsPreviewLoading(false);
@@ -756,7 +641,7 @@ export function MarkdownDiffViewer(props: DiffViewerBodyProps) {
       }
 
       setContents({ base: nextBase, target: nextTarget });
-      setLoadedSourcesKey(previewSourcesKey);
+      setLoaded({ sourcesKey: previewSourcesKey, fetchKey: previewFetchKey });
 
       const baseFailed = baseSource !== null && baseResult.status === 'rejected';
       const targetFailed = targetSource !== null && targetResult.status === 'rejected';
@@ -782,7 +667,7 @@ export function MarkdownDiffViewer(props: DiffViewerBodyProps) {
 
     const relevantContent = file.status === 'deleted' ? contents.base : contents.target;
 
-    if (previewSourcesKey !== loadedSourcesKey || relevantContent === null) {
+    if (previewFetchKey !== loaded?.fetchKey || relevantContent === null) {
       void run();
     } else {
       setIsPreviewLoading(false);
@@ -794,9 +679,11 @@ export function MarkdownDiffViewer(props: DiffViewerBodyProps) {
   }, [
     contents.base,
     contents.target,
+    fetchableSources,
     file.status,
+    loaded,
     loadedSourcesKey,
-    previewSources,
+    previewFetchKey,
     previewSourcesKey,
   ]);
 
@@ -810,21 +697,66 @@ export function MarkdownDiffViewer(props: DiffViewerBodyProps) {
     [fullPreviewContent, loadedSourcesKey, previewSourcesKey],
   );
 
-  useEffect(() => {
-    if (mode === 'full-preview' && !hasFullPreview) {
-      setMode('diff-preview');
-    }
-  }, [hasFullPreview, mode]);
+  const hasSplitPreview =
+    (file.status === 'added' || fetchableSources.base !== null) &&
+    (file.status === 'deleted' || fetchableSources.target !== null);
+  const isPreviewPending =
+    (fetchableSources.base !== null || fetchableSources.target !== null) &&
+    (isPreviewLoading || loadedSourcesKey !== previewSourcesKey);
+  const isSplitPreviewReady =
+    loadedSourcesKey === previewSourcesKey &&
+    (file.status === 'added' || contents.base !== null) &&
+    (file.status === 'deleted' || contents.target !== null);
+
+  // A remembered mode may not fit this file (e.g. stdin has no blobs), so fall back
+  // without overwriting the stored choice.
+  const effectiveMode: PreviewMode =
+    mode === 'split-preview' && !hasSplitPreview
+      ? 'diff'
+      : mode === 'full-preview' && !hasFullPreview && !isPreviewPending
+        ? 'diff-preview'
+        : mode;
 
   return (
     <div className="bg-github-bg-primary">
       <div className="flex items-center justify-between border-b border-github-border px-4 py-2">
-        <PreviewModeTabs mode={mode} hasFullPreview={hasFullPreview} onModeChange={setMode} />
+        <PreviewModeTabs
+          mode={effectiveMode}
+          hasFullPreview={hasFullPreview}
+          hasSplitPreview={hasSplitPreview}
+          onModeChange={handleModeChange}
+        />
       </div>
 
-      {mode === 'diff' && <TextDiffViewer {...props} />}
+      {effectiveMode === 'diff' && <TextDiffViewer {...props} />}
 
-      {mode === 'diff-preview' && (
+      {effectiveMode === 'split-preview' &&
+        (isSplitPreviewReady ? (
+          <MarkdownSplitPreview
+            filePath={file.path}
+            baseContent={file.status === 'added' ? null : contents.base}
+            targetContent={file.status === 'deleted' ? null : contents.target}
+            baseLabel={baseCommitish}
+            targetLabel={targetCommitish}
+            threads={props.threads}
+            showAuthorBadges={props.showAuthorBadges}
+            syntaxTheme={syntaxTheme}
+            onAddComment={props.onAddComment}
+            onGenerateThreadPrompt={props.onGenerateThreadPrompt}
+            onRemoveThread={props.onRemoveThread}
+            onReplyToThread={props.onReplyToThread}
+            onRemoveMessage={props.onRemoveMessage}
+            onUpdateMessage={props.onUpdateMessage}
+          />
+        ) : (
+          <div className="p-4 text-sm text-github-text-muted">
+            {isPreviewPending
+              ? 'Loading preview...'
+              : (previewError ?? partialFailureLabel ?? 'Preview unavailable.')}
+          </div>
+        ))}
+
+      {effectiveMode === 'diff-preview' && (
         <div className="p-4">
           {partialFailureLabel && (
             <div className="text-sm text-github-text-muted mb-3">{partialFailureLabel}</div>
@@ -840,7 +772,7 @@ export function MarkdownDiffViewer(props: DiffViewerBodyProps) {
         </div>
       )}
 
-      {mode === 'full-preview' && (
+      {effectiveMode === 'full-preview' && (
         <div className="p-4">
           {isPreviewLoading && (
             <div className="text-sm text-github-text-muted mb-3">Loading preview...</div>
