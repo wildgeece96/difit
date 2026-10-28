@@ -2,11 +2,10 @@ import { useEffect, useMemo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
-import type { DiffFile, DiffLine } from '../../types/diff';
+import type { DiffLine } from '../../types/diff';
 import { FrontmatterTable } from '../components/FrontmatterTable';
 import type { MergedChunk } from '../hooks/useExpandedLines';
-import { extractFrontmatter, getFrontmatterLines } from '../utils/frontmatter';
-import { computeFrontmatterDiff } from '../utils/frontmatterDiff';
+import { extractFrontmatter } from '../utils/frontmatter';
 import { isSafeUrl } from '../utils/markdownUtils';
 
 import { getMarkdownComponents } from './markdownComponents';
@@ -113,87 +112,6 @@ const buildPreviewBlocks = (chunks: MergedChunk[]): PreviewBlock[] => {
   });
 
   return blocks;
-};
-
-const stripCarriageReturn = (line: string) => line.replace(/\r$/, '');
-
-/**
- * Removes the leading YAML frontmatter lines from the diff preview blocks so the
- * `---` delimiters and raw YAML are not rendered as markdown below the dedicated
- * frontmatter table. Deleted lines are matched against the base frontmatter,
- * added/changed lines against the target frontmatter, and context lines against
- * both. Matching is content-verified: as soon as a line no longer matches the
- * expected frontmatter (e.g. the diff starts below the frontmatter, so the first
- * lines are body content), stripping stops and the remaining blocks are kept
- * untouched.
- */
-const stripFrontmatterBlocks = (
-  blocks: PreviewBlock[],
-  baseLines: string[],
-  targetLines: string[],
-): PreviewBlock[] => {
-  if (baseLines.length === 0 && targetLines.length === 0) {
-    return blocks;
-  }
-
-  let baseIndex = 0;
-  let targetIndex = 0;
-  let stripping = true;
-  const result: PreviewBlock[] = [];
-
-  for (const block of blocks) {
-    if (!stripping) {
-      result.push(block);
-      continue;
-    }
-
-    const keptLines: string[] = [];
-
-    for (const rawLine of block.lines) {
-      if (!stripping) {
-        keptLines.push(rawLine);
-        continue;
-      }
-
-      const line = stripCarriageReturn(rawLine);
-      const baseMatches = baseIndex < baseLines.length && baseLines[baseIndex] === line;
-      const targetMatches = targetIndex < targetLines.length && targetLines[targetIndex] === line;
-
-      let matched = false;
-      if (block.type === 'delete') {
-        matched = baseMatches;
-        if (matched) baseIndex += 1;
-      } else if (block.type === 'add' || block.type === 'change') {
-        matched = targetMatches;
-        if (matched) targetIndex += 1;
-      } else {
-        // context: the line is unchanged, so it must sit within the frontmatter
-        // on every side that actually has frontmatter.
-        matched =
-          (baseLines.length === 0 || baseMatches) && (targetLines.length === 0 || targetMatches);
-        if (matched) {
-          if (baseMatches) baseIndex += 1;
-          if (targetMatches) targetIndex += 1;
-        }
-      }
-
-      if (!matched) {
-        stripping = false;
-        keptLines.push(rawLine);
-        continue;
-      }
-
-      if (baseIndex >= baseLines.length && targetIndex >= targetLines.length) {
-        stripping = false;
-      }
-    }
-
-    if (keptLines.length > 0) {
-      result.push({ type: block.type, lines: keptLines });
-    }
-  }
-
-  return result;
 };
 
 const getBlockStyle = (type: PreviewBlockType) => {
@@ -339,107 +257,50 @@ const getCodeLineClass = (type: PreviewBlockType) => {
   }
 };
 
+// Fallback when the two files cannot both be loaded (stdin, a failed fetch), so the blocks
+// cannot be aligned: renders the git hunks, with a snapshot of whichever frontmatter loaded.
 const MarkdownDiffPreview = ({
   blocks,
   syntaxTheme,
   baseContent,
   targetContent,
-  fileStatus,
-  diffStartsAtFileTop,
 }: {
   blocks: PreviewBlock[];
   syntaxTheme?: DiffViewerBodyProps['syntaxTheme'];
   baseContent: string | null;
   targetContent: string | null;
-  fileStatus: DiffFile['status'];
-  diffStartsAtFileTop: boolean;
 }) => {
   const components = useMemo(() => getMarkdownComponents(syntaxTheme), [syntaxTheme]);
 
   const frontmatterView = useMemo(() => {
-    const baseAvailable = baseContent !== null;
-    const targetAvailable = targetContent !== null;
-    const baseData = baseAvailable ? extractFrontmatter(baseContent).data : null;
-    const targetData = targetAvailable ? extractFrontmatter(targetContent).data : null;
-
-    // When both sides needed for the diff are available we render a structured
-    // table and strip the raw frontmatter lines from the preview blocks below.
-    const canDiff =
-      fileStatus === 'added'
-        ? targetAvailable
-        : fileStatus === 'deleted'
-          ? baseAvailable
-          : baseAvailable && targetAvailable;
-
-    if (canDiff) {
-      // Stripping only applies when the diff actually reaches the top of the
-      // file; otherwise leading body lines that merely look like frontmatter
-      // (e.g. a `---` horizontal rule) would be stripped by mistake.
-      const stripBaseLines =
-        !diffStartsAtFileTop || fileStatus === 'added'
-          ? []
-          : getFrontmatterLines(baseContent ?? '');
-      const stripTargetLines =
-        !diffStartsAtFileTop || fileStatus === 'deleted'
-          ? []
-          : getFrontmatterLines(targetContent ?? '');
-      const baseInput = fileStatus === 'added' ? null : baseData;
-      const targetInput = fileStatus === 'deleted' ? null : targetData;
-      const entries = computeFrontmatterDiff(baseInput, targetInput);
-      const hasFrontmatterChanges = entries.some((entry) => entry.status !== 'unchanged');
-      const view = hasFrontmatterChanges ? (
-        <FrontmatterTable mode="diff" entries={entries} label="Frontmatter" />
-      ) : null;
-      return { view, stripBaseLines, stripTargetLines };
+    const targetData = targetContent !== null ? extractFrontmatter(targetContent).data : null;
+    if (targetData !== null) {
+      return (
+        <FrontmatterTable
+          mode="snapshot"
+          data={targetData}
+          label="Frontmatter (target only — base unavailable)"
+        />
+      );
     }
-
-    // partial fetch failure or stdin — snapshot fallback with explanatory label.
-    // The raw frontmatter lines are retained in the preview blocks.
-    if (targetAvailable && targetData !== null) {
-      return {
-        view: (
-          <FrontmatterTable
-            mode="snapshot"
-            data={targetData}
-            label="Frontmatter (target only — base unavailable)"
-          />
-        ),
-        stripBaseLines: [] as string[],
-        stripTargetLines: [] as string[],
-      };
+    const baseData = baseContent !== null ? extractFrontmatter(baseContent).data : null;
+    if (baseData !== null) {
+      return (
+        <FrontmatterTable
+          mode="snapshot"
+          data={baseData}
+          label="Frontmatter (base only — target unavailable)"
+        />
+      );
     }
-    if (baseAvailable && baseData !== null) {
-      return {
-        view: (
-          <FrontmatterTable
-            mode="snapshot"
-            data={baseData}
-            label="Frontmatter (base only — target unavailable)"
-          />
-        ),
-        stripBaseLines: [] as string[],
-        stripTargetLines: [] as string[],
-      };
-    }
+    return null;
+  }, [baseContent, targetContent]);
 
-    return { view: null, stripBaseLines: [] as string[], stripTargetLines: [] as string[] };
-  }, [baseContent, targetContent, fileStatus, diffStartsAtFileTop]);
-
-  const renderBlocks = useMemo(
-    () =>
-      buildRenderBlocks(
-        stripFrontmatterBlocks(
-          blocks,
-          frontmatterView.stripBaseLines,
-          frontmatterView.stripTargetLines,
-        ),
-      ),
-    [blocks, frontmatterView.stripBaseLines, frontmatterView.stripTargetLines],
-  );
+  const renderBlocks = useMemo(() => buildRenderBlocks(blocks), [blocks]);
 
   return (
     <div className="space-y-4">
-      {frontmatterView.view}
+      {frontmatterView}
       {renderBlocks.map((block, index) => {
         if (block.kind === 'fenced-code') {
           return (
@@ -484,33 +345,6 @@ const MarkdownDiffPreview = ({
   );
 };
 
-const MarkdownFullPreview = ({
-  content,
-  syntaxTheme,
-}: {
-  content: string;
-  syntaxTheme?: DiffViewerBodyProps['syntaxTheme'];
-}) => {
-  const components = useMemo(() => getMarkdownComponents(syntaxTheme), [syntaxTheme]);
-  const { data: frontmatter, content: body } = useMemo(
-    () => extractFrontmatter(content),
-    [content],
-  );
-
-  return (
-    <div className="space-y-4">
-      <FrontmatterTable mode="snapshot" data={frontmatter} />
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        urlTransform={(url) => (isSafeUrl(url) ? url : '')}
-        components={components}
-      >
-        {body}
-      </ReactMarkdown>
-    </div>
-  );
-};
-
 export function MarkdownDiffViewer(props: DiffViewerBodyProps) {
   const { file, baseCommitish, targetCommitish, mergedChunks, syntaxTheme, diffVersion } = props;
   // App owns the remembered mode when it passes a change handler; otherwise the passed
@@ -530,13 +364,6 @@ export function MarkdownDiffViewer(props: DiffViewerBodyProps) {
   const [loaded, setLoaded] = useState<{ sourcesKey: string; fetchKey: string } | null>(null);
   const loadedSourcesKey = loaded?.sourcesKey ?? null;
   const previewBlocks = useMemo(() => buildPreviewBlocks(mergedChunks), [mergedChunks]);
-  // Frontmatter can only appear in the diff when the first chunk starts at the
-  // top of the file; a chunk starting mid-file must be body content even if its
-  // leading lines happen to match the frontmatter (e.g. a `---` horizontal rule).
-  const diffStartsAtFileTop = useMemo(() => {
-    const firstChunk = mergedChunks[0];
-    return firstChunk !== undefined && (firstChunk.oldStart <= 1 || firstChunk.newStart <= 1);
-  }, [mergedChunks]);
 
   const previewSources = useMemo<PreviewSourcePair>(() => {
     const target: PreviewSource =
@@ -717,6 +544,23 @@ export function MarkdownDiffViewer(props: DiffViewerBodyProps) {
         ? 'diff-preview'
         : mode;
 
+  const commentProps = {
+    filePath: file.path,
+    threads: props.threads,
+    showAuthorBadges: props.showAuthorBadges,
+    syntaxTheme,
+    onAddComment: props.onAddComment,
+    onGenerateThreadPrompt: props.onGenerateThreadPrompt,
+    onRemoveThread: props.onRemoveThread,
+    onReplyToThread: props.onReplyToThread,
+    onRemoveMessage: props.onRemoveMessage,
+    onUpdateMessage: props.onUpdateMessage,
+  };
+  const splitContents = {
+    baseContent: file.status === 'added' ? null : contents.base,
+    targetContent: file.status === 'deleted' ? null : contents.target,
+  };
+
   return (
     <div className="bg-github-bg-primary">
       <div className="flex items-center justify-between border-b border-github-border px-4 py-2">
@@ -733,20 +577,10 @@ export function MarkdownDiffViewer(props: DiffViewerBodyProps) {
       {effectiveMode === 'split-preview' &&
         (isSplitPreviewReady ? (
           <MarkdownSplitPreview
-            filePath={file.path}
-            baseContent={file.status === 'added' ? null : contents.base}
-            targetContent={file.status === 'deleted' ? null : contents.target}
+            {...commentProps}
+            {...splitContents}
             baseLabel={baseCommitish}
             targetLabel={targetCommitish}
-            threads={props.threads}
-            showAuthorBadges={props.showAuthorBadges}
-            syntaxTheme={syntaxTheme}
-            onAddComment={props.onAddComment}
-            onGenerateThreadPrompt={props.onGenerateThreadPrompt}
-            onRemoveThread={props.onRemoveThread}
-            onReplyToThread={props.onReplyToThread}
-            onRemoveMessage={props.onRemoveMessage}
-            onUpdateMessage={props.onUpdateMessage}
           />
         ) : (
           <div className="p-4 text-sm text-github-text-muted">
@@ -756,7 +590,21 @@ export function MarkdownDiffViewer(props: DiffViewerBodyProps) {
           </div>
         ))}
 
-      {effectiveMode === 'diff-preview' && (
+      {effectiveMode === 'diff-preview' && isSplitPreviewReady && (
+        <>
+          {partialFailureLabel && (
+            <div className="px-4 pt-3 text-sm text-github-text-muted">{partialFailureLabel}</div>
+          )}
+          <MarkdownSplitPreview {...commentProps} {...splitContents} layout="unified" />
+        </>
+      )}
+
+      {effectiveMode === 'diff-preview' && !isSplitPreviewReady && isPreviewPending && (
+        <div className="p-4 text-sm text-github-text-muted">Loading preview...</div>
+      )}
+
+      {/* Without both files (e.g. stdin) the blocks cannot be aligned: render the hunks. */}
+      {effectiveMode === 'diff-preview' && !isSplitPreviewReady && !isPreviewPending && (
         <div className="p-4">
           {partialFailureLabel && (
             <div className="text-sm text-github-text-muted mb-3">{partialFailureLabel}</div>
@@ -766,8 +614,6 @@ export function MarkdownDiffViewer(props: DiffViewerBodyProps) {
             syntaxTheme={syntaxTheme}
             baseContent={contents.base}
             targetContent={contents.target}
-            fileStatus={file.status}
-            diffStartsAtFileTop={diffStartsAtFileTop}
           />
         </div>
       )}
@@ -782,7 +628,12 @@ export function MarkdownDiffViewer(props: DiffViewerBodyProps) {
             <div className="text-sm text-github-text-muted mb-3">{partialFailureLabel}</div>
           )}
           {!isPreviewLoading && !previewError && fullPreviewContent !== null && (
-            <MarkdownFullPreview content={fullPreviewContent} syntaxTheme={syntaxTheme} />
+            <MarkdownSplitPreview
+              {...commentProps}
+              baseContent={file.status === 'deleted' ? fullPreviewContent : null}
+              targetContent={file.status === 'deleted' ? null : fullPreviewContent}
+              layout="single"
+            />
           )}
           {!isPreviewLoading && !previewError && fullPreviewContent === null && (
             <div className="text-sm text-github-text-muted">Preview unavailable.</div>

@@ -17,6 +17,7 @@ import { CommentForm } from '../components/CommentForm';
 import { CommentThreadCard } from '../components/CommentThreadCard';
 import { FrontmatterTable } from '../components/FrontmatterTable';
 import { extractFrontmatter } from '../utils/frontmatter';
+import { computeFrontmatterDiff } from '../utils/frontmatterDiff';
 import {
   alignMarkdownBlocks,
   diffRenderedText,
@@ -49,6 +50,12 @@ type SelectionTarget = LineRange & {
 };
 type HoverTarget = LineRange & { top: number; height: number };
 
+/**
+ * split: before and after side by side (Split Preview). unified: one column, removed and
+ * added blocks stacked (Diff Preview). single: one file, no diff (Full Preview).
+ */
+type MarkdownPreviewLayout = 'split' | 'unified' | 'single';
+
 export type MarkdownSplitPreviewProps = Pick<
   DiffViewerBodyProps,
   | 'threads'
@@ -67,6 +74,8 @@ export type MarkdownSplitPreviewProps = Pick<
   targetContent: string | null;
   baseLabel?: string;
   targetLabel?: string;
+  /** single shows targetContent, or baseContent when targetContent is null. */
+  layout?: MarkdownPreviewLayout;
 };
 
 const NON_RENDERED_KINDS = new Set<MarkdownBlock['kind']>(['html', 'definition']);
@@ -108,14 +117,22 @@ const hideFootnoteSection = ({ className, children }: React.ComponentProps<'sect
 const toFootnoteDisplaySource = (source: string) =>
   source.replace(/^(\s*)\[\^([^\]]+)\]:\s?/, '$1\\[$2\\] ');
 
+type FrontmatterPair = { old: MarkdownBlock | undefined; new: MarkdownBlock | undefined };
+
+const readFrontmatter = (block: MarkdownBlock | undefined) =>
+  block ? extractFrontmatter(`${block.source}\n`).data : null;
+
 const BlockContent = memo(function BlockContent({
   block,
   definitions,
   syntaxTheme,
+  frontmatterDiff,
 }: {
   block: MarkdownBlock;
   definitions: string[];
   syntaxTheme?: DiffViewerBodyProps['syntaxTheme'];
+  /** Set in the unified layout: one key-by-key table instead of two snapshots. */
+  frontmatterDiff?: FrontmatterPair;
 }) {
   const components = useMemo(
     () => ({
@@ -129,8 +146,20 @@ const BlockContent = memo(function BlockContent({
     'data-md-line-end': block.endLine,
   };
 
+  if (block.kind === 'frontmatter' && frontmatterDiff) {
+    const entries = computeFrontmatterDiff(
+      readFrontmatter(frontmatterDiff.old),
+      readFrontmatter(frontmatterDiff.new),
+    );
+    return (
+      <div {...lineAttributes}>
+        <FrontmatterTable mode="diff" entries={entries} label="Frontmatter" />
+      </div>
+    );
+  }
+
   if (block.kind === 'frontmatter') {
-    const { data } = extractFrontmatter(`${block.source}\n`);
+    const data = readFrontmatter(block);
     return (
       <div {...lineAttributes}>
         {data ? (
@@ -171,6 +200,23 @@ const BlockContent = memo(function BlockContent({
   );
 });
 
+const getChangedFrontmatter = (row: MarkdownBlockRow): FrontmatterPair | undefined => {
+  if (row.type === 'unchanged') return undefined;
+  const pair = { old: blockOnSide(row, 'old'), new: blockOnSide(row, 'new') };
+  return (pair.old ?? pair.new)?.kind === 'frontmatter' ? pair : undefined;
+};
+
+const getCellSides = (
+  row: MarkdownBlockRow,
+  layout: MarkdownPreviewLayout,
+  singleSide: DiffSide,
+): DiffSide[] => {
+  if (layout === 'split') return ['old', 'new'];
+  if (layout === 'single') return [singleSide];
+  if (row.type === 'modified' && !getChangedFrontmatter(row)) return ['old', 'new'];
+  return row.type === 'removed' ? ['old'] : ['new'];
+};
+
 const getPaneStatus = (rowType: MarkdownBlockRow['type'], side: DiffSide) => {
   if (rowType === 'modified') return side === 'old' ? 'removed' : 'added';
   if (rowType === 'removed' && side === 'old') return 'removed';
@@ -186,6 +232,8 @@ const PaneCell = memo(function PaneCell({
   definitions,
   syntaxTheme,
   formattingOnly,
+  divided,
+  frontmatterDiff,
   contentRef,
   onStartComment,
 }: {
@@ -196,12 +244,15 @@ const PaneCell = memo(function PaneCell({
   definitions: string[];
   syntaxTheme?: DiffViewerBodyProps['syntaxTheme'];
   formattingOnly: boolean;
+  divided: boolean;
+  frontmatterDiff?: FrontmatterPair;
   contentRef: React.RefObject<HTMLDivElement | null>;
   onStartComment: (target: CommentTarget) => void;
 }) {
   const cellRef = useRef<HTMLDivElement>(null);
   const [hover, setHover] = useState<HoverTarget | null>(null);
-  const status = block ? getPaneStatus(rowType, side) : null;
+  // The frontmatter diff table colors its own rows.
+  const status = block && !frontmatterDiff ? getPaneStatus(rowType, side) : null;
 
   const handleMouseMove = (event: React.MouseEvent) => {
     const cell = cellRef.current;
@@ -248,14 +299,19 @@ const PaneCell = memo(function PaneCell({
       data-md-row={rowIndex}
       data-md-status={status ?? (block ? 'unchanged' : 'empty')}
       className={`relative min-w-0 border-l-4 py-2 pl-9 pr-4 ${statusClass} ${
-        side === 'old' ? 'border-r border-r-github-border' : ''
+        divided ? 'border-r border-r-github-border' : ''
       } ${block ? '' : 'md-split-spacer'}`}
       onMouseMove={block ? handleMouseMove : undefined}
       onMouseLeave={() => setHover(null)}
     >
       {block && (
         <div ref={contentRef} className="md-split-content">
-          <BlockContent block={block} definitions={definitions} syntaxTheme={syntaxTheme} />
+          <BlockContent
+            block={block}
+            definitions={definitions}
+            syntaxTheme={syntaxTheme}
+            frontmatterDiff={frontmatterDiff}
+          />
         </div>
       )}
       {formattingOnly && side === 'new' && (
@@ -287,6 +343,8 @@ const PaneCell = memo(function PaneCell({
 const SplitRow = memo(function SplitRow({
   row,
   rowIndex,
+  layout,
+  singleSide,
   oldDefinitions,
   newDefinitions,
   syntaxTheme,
@@ -294,6 +352,8 @@ const SplitRow = memo(function SplitRow({
 }: {
   row: MarkdownBlockRow;
   rowIndex: number;
+  layout: MarkdownPreviewLayout;
+  singleSide: DiffSide;
   oldDefinitions: string[];
   newDefinitions: string[];
   syntaxTheme?: DiffViewerBodyProps['syntaxTheme'];
@@ -340,30 +400,29 @@ const SplitRow = memo(function SplitRow({
     };
   }, [row]);
 
+  const frontmatterDiff = layout === 'unified' ? getChangedFrontmatter(row) : undefined;
+
   return (
-    <div className="grid grid-cols-2 border-b border-github-border/30" data-md-row-type={row.type}>
-      <PaneCell
-        side="old"
-        rowIndex={rowIndex}
-        rowType={row.type}
-        block={blockOnSide(row, 'old')}
-        definitions={oldDefinitions}
-        syntaxTheme={syntaxTheme}
-        formattingOnly={false}
-        contentRef={oldContentRef}
-        onStartComment={onStartComment}
-      />
-      <PaneCell
-        side="new"
-        rowIndex={rowIndex}
-        rowType={row.type}
-        block={blockOnSide(row, 'new')}
-        definitions={newDefinitions}
-        syntaxTheme={syntaxTheme}
-        formattingOnly={row.type === 'modified' && formattingOnly}
-        contentRef={newContentRef}
-        onStartComment={onStartComment}
-      />
+    <div
+      className={`${layout === 'split' ? 'grid grid-cols-2' : ''} border-b border-github-border/30`}
+      data-md-row-type={row.type}
+    >
+      {getCellSides(row, layout, singleSide).map((side) => (
+        <PaneCell
+          key={side}
+          side={side}
+          rowIndex={rowIndex}
+          rowType={row.type}
+          block={blockOnSide(row, side)}
+          definitions={side === 'old' ? oldDefinitions : newDefinitions}
+          syntaxTheme={syntaxTheme}
+          formattingOnly={side === 'new' && row.type === 'modified' && formattingOnly}
+          divided={layout === 'split' && side === 'old'}
+          frontmatterDiff={frontmatterDiff}
+          contentRef={side === 'old' ? oldContentRef : newContentRef}
+          onStartComment={onStartComment}
+        />
+      ))}
     </div>
   );
 });
@@ -374,6 +433,7 @@ export function MarkdownSplitPreview({
   targetContent,
   baseLabel,
   targetLabel,
+  layout = 'split',
   threads,
   showAuthorBadges,
   syntaxTheme,
@@ -403,17 +463,30 @@ export function MarkdownSplitPreview({
       newBlocks.filter((block) => DEFINITION_KINDS.has(block.kind)).map((block) => block.source),
     [newBlocks],
   );
-  const rows = useMemo(() => alignMarkdownBlocks(oldBlocks, newBlocks), [oldBlocks, newBlocks]);
-  const { byRow: threadsByRow, unplaced } = useMemo(
-    () => placeThreadsOnRows(threads, rows),
-    [threads, rows],
-  );
+  const singleSide: DiffSide = targetContent === null ? 'old' : 'new';
+  const rows = useMemo<MarkdownBlockRow[]>(() => {
+    if (layout !== 'single') return alignMarkdownBlocks(oldBlocks, newBlocks);
+    return (singleSide === 'old' ? oldBlocks : newBlocks).map((block) => ({
+      type: 'unchanged',
+      old: block,
+      new: block,
+    }));
+  }, [layout, singleSide, oldBlocks, newBlocks]);
+  const { byRow: threadsByRow, unplaced } = useMemo(() => {
+    if (layout !== 'single') return placeThreadsOnRows(threads, rows);
+    // The other side's line numbers do not point into this file, so list those threads on top.
+    const isShownSide = (thread: (typeof threads)[number]) =>
+      (thread.side === 'old' ? 'old' : 'new') === singleSide;
+    const placed = placeThreadsOnRows(threads.filter(isShownSide), rows);
+    return { ...placed, unplaced: [...placed.unplaced, ...threads.filter((t) => !isShownSide(t))] };
+  }, [layout, singleSide, threads, rows]);
   const items = useMemo(() => {
+    if (layout === 'single') return rows.map((_, index) => ({ kind: 'row' as const, index }));
     const pinned = new Set(threadsByRow.keys());
     if (commentTarget) pinned.add(commentTarget.rowIndex);
     return buildSplitPreviewItems(rows, pinned, expandedSections);
-  }, [rows, threadsByRow, commentTarget, expandedSections]);
-  const hasRenderedChanges = rows.some((row) => row.type !== 'unchanged');
+  }, [layout, rows, threadsByRow, commentTarget, expandedSections]);
+  const hasRenderedChanges = layout === 'single' || rows.some((row) => row.type !== 'unchanged');
 
   const getSourceText = useCallback(
     ({ side, start, end }: LineRange & { side: DiffSide }) =>
@@ -522,7 +595,10 @@ export function MarkdownSplitPreview({
     const rowThreads = threadsByRow.get(rowIndex)?.[side] ?? [];
     const isCommentingHere = commentTarget?.rowIndex === rowIndex && commentTarget.side === side;
     return (
-      <div className={`min-w-0 ${side === 'old' ? 'border-r border-github-border' : ''}`}>
+      <div
+        key={side}
+        className={`min-w-0 ${layout === 'split' && side === 'old' ? 'border-r border-github-border' : ''}`}
+      >
         {rowThreads.map(renderThreadCard)}
         {isCommentingHere && commentTarget && (
           <CommentForm
@@ -547,27 +623,29 @@ export function MarkdownSplitPreview({
     <div
       ref={containerRef}
       className="relative"
-      data-testid="markdown-split-preview"
+      data-testid={`markdown-${layout}-preview`}
       onMouseUp={handleMouseUp}
     >
-      <div className="grid grid-cols-2 border-b border-github-border bg-github-bg-secondary text-xs text-github-text-secondary">
-        <div className="border-r border-github-border px-4 py-2">
-          <span className="font-semibold text-github-text-primary">Before</span>
-          {baseContent === null ? (
-            <span className="ml-2">file does not exist</span>
-          ) : (
-            baseLabel && <code className="ml-2 font-mono">{baseLabel}</code>
-          )}
+      {layout === 'split' && (
+        <div className="grid grid-cols-2 border-b border-github-border bg-github-bg-secondary text-xs text-github-text-secondary">
+          <div className="border-r border-github-border px-4 py-2">
+            <span className="font-semibold text-github-text-primary">Before</span>
+            {baseContent === null ? (
+              <span className="ml-2">file does not exist</span>
+            ) : (
+              baseLabel && <code className="ml-2 font-mono">{baseLabel}</code>
+            )}
+          </div>
+          <div className="px-4 py-2">
+            <span className="font-semibold text-github-text-primary">After</span>
+            {targetContent === null ? (
+              <span className="ml-2">file deleted</span>
+            ) : (
+              targetLabel && <code className="ml-2 font-mono">{targetLabel}</code>
+            )}
+          </div>
         </div>
-        <div className="px-4 py-2">
-          <span className="font-semibold text-github-text-primary">After</span>
-          {targetContent === null ? (
-            <span className="ml-2">file deleted</span>
-          ) : (
-            targetLabel && <code className="ml-2 font-mono">{targetLabel}</code>
-          )}
-        </div>
-      </div>
+      )}
 
       {!hasRenderedChanges && rows.length > 0 && (
         <div className="px-4 py-2 text-sm text-github-text-muted">
@@ -605,15 +683,20 @@ export function MarkdownSplitPreview({
             <SplitRow
               row={row}
               rowIndex={item.index}
+              layout={layout}
+              singleSide={singleSide}
               oldDefinitions={oldDefinitions}
               newDefinitions={newDefinitions}
               syntaxTheme={syntaxTheme}
               onStartComment={handleStartComment}
             />
             {hasComments && (
-              <div className="grid grid-cols-2 border-b border-github-border bg-github-bg-secondary">
-                {renderSideComments(item.index, 'old')}
-                {renderSideComments(item.index, 'new')}
+              <div
+                className={`${layout === 'split' ? 'grid grid-cols-2' : ''} border-b border-github-border bg-github-bg-secondary`}
+              >
+                {(layout === 'single' ? [singleSide] : (['old', 'new'] as const)).map((side) =>
+                  renderSideComments(item.index, side),
+                )}
               </div>
             )}
           </React.Fragment>

@@ -221,3 +221,146 @@ describe('MarkdownSplitPreview', () => {
     );
   });
 });
+
+const createThread = (overrides: Partial<CommentThread>): CommentThread => ({
+  id: 'thread-1',
+  file: 'docs/guide.md',
+  line: 1,
+  side: 'new',
+  createdAt: '2026-09-30T00:00:00.000Z',
+  updatedAt: '2026-09-30T00:00:00.000Z',
+  messages: [
+    {
+      id: 'message-1',
+      body: 'A note',
+      createdAt: '2026-09-30T00:00:00.000Z',
+      updatedAt: '2026-09-30T00:00:00.000Z',
+    },
+  ],
+  ...overrides,
+});
+
+describe('MarkdownSplitPreview unified layout (Diff Preview)', () => {
+  it('stacks a modified block as before then after in one column, without the header', () => {
+    const { container } = renderPreview({ layout: 'unified' });
+
+    const modifiedRow = container.querySelector('[data-md-row-type="modified"]');
+    const sides = [...(modifiedRow?.querySelectorAll('[data-md-cell]') ?? [])].map((cell) =>
+      cell.getAttribute('data-md-side'),
+    );
+    expect(sides).toEqual(['old', 'new']);
+    const unchangedRow = container.querySelector('[data-md-row-type="unchanged"]');
+    expect(unchangedRow?.querySelectorAll('[data-md-cell]')).toHaveLength(1);
+    expect(container.querySelector('.md-split-spacer')).toBeNull();
+    expect(screen.queryByText('Before')).not.toBeInTheDocument();
+  });
+
+  it('sends a comment on a removed block as an old-side comment', async () => {
+    const { container, props } = renderPreview({ layout: 'unified' });
+
+    openGutterComment(getCell(container, 'old', 'brown'), 'brown');
+    expect(screen.getByText('Comment on L3-L4 (before)')).toBeInTheDocument();
+    fireEvent.change(screen.getByPlaceholderText('Leave a comment...'), {
+      target: { value: 'Keep brown' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
+
+    await waitFor(() =>
+      expect(props.onAddComment).toHaveBeenCalledWith(
+        [3, 4],
+        'Keep brown',
+        'The quick brown fox\njumps over the dog.',
+        'old',
+      ),
+    );
+  });
+
+  it('shows threads of both sides under the row', () => {
+    renderPreview({
+      layout: 'unified',
+      threads: [
+        createThread({ id: 'old-thread', line: 3, side: 'old' }),
+        createThread({
+          id: 'new-thread',
+          line: 3,
+          messages: [{ id: 'm', body: 'After note', createdAt: '', updatedAt: '' }],
+        }),
+      ],
+    });
+
+    expect(screen.getByText('A note')).toBeInTheDocument();
+    expect(screen.getByText('After note')).toBeInTheDocument();
+  });
+
+  it('shows a changed frontmatter as one key-by-key table', () => {
+    const { container } = renderPreview({
+      layout: 'unified',
+      baseContent: '---\ntitle: Old\n---\n\nBody',
+      targetContent: '---\ntitle: New\n---\n\nBody',
+    });
+
+    expect(screen.getAllByText('title')).toHaveLength(1);
+    expect(screen.getByText('Old')).toBeInTheDocument();
+    expect(screen.getByText('New')).toBeInTheDocument();
+    const frontmatterCell = getCell(container, 'new', 'title');
+    expect(frontmatterCell.querySelector('[data-md-line-start="1"]')).not.toBeNull();
+  });
+});
+
+describe('MarkdownSplitPreview single layout (Full Preview)', () => {
+  it('shows every block of the file, with no diff colors and no collapsing', () => {
+    const { container } = renderPreview({ layout: 'single', baseContent: null });
+
+    const cells = [...container.querySelectorAll('[data-md-cell]')];
+    expect(cells).toHaveLength(4);
+    expect(cells.every((cell) => cell.getAttribute('data-md-status') === 'unchanged')).toBe(true);
+    expect(cells.every((cell) => cell.getAttribute('data-md-side') === 'new')).toBe(true);
+  });
+
+  it('comments on the shown file with its line numbers', async () => {
+    const { container, props } = renderPreview({ layout: 'single', baseContent: null });
+
+    openGutterComment(getCell(container, 'new', 'new item'), 'new item');
+    fireEvent.change(screen.getByPlaceholderText('Leave a comment...'), {
+      target: { value: 'Why?' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
+
+    await waitFor(() =>
+      expect(props.onAddComment).toHaveBeenCalledWith(6, 'Why?', '- new item', 'new'),
+    );
+  });
+
+  it('uses the before side for a deleted file', async () => {
+    const { container, props } = renderPreview({ layout: 'single', targetContent: null });
+
+    openGutterComment(getCell(container, 'old', 'brown'), 'brown');
+    fireEvent.change(screen.getByPlaceholderText('Leave a comment...'), {
+      target: { value: 'Gone' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
+
+    await waitFor(() =>
+      expect(props.onAddComment).toHaveBeenCalledWith(
+        [3, 4],
+        'Gone',
+        'The quick brown fox\njumps over the dog.',
+        'old',
+      ),
+    );
+  });
+
+  it('lists threads on the other side above the file, since their lines do not match it', () => {
+    const { container } = renderPreview({
+      layout: 'single',
+      baseContent: null,
+      threads: [createThread({ line: 3, side: 'old' })],
+    });
+
+    const firstCell = container.querySelector('[data-md-cell]');
+    const note = screen.getByText('A note');
+    expect(
+      note.compareDocumentPosition(firstCell as Node) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+});
