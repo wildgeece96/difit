@@ -475,6 +475,20 @@ describe('MarkdownDiffViewer two-side fetch', () => {
     ).toBeInTheDocument();
   });
 
+  it('falls back to the hunk Diff Preview when Split Preview cannot load both sides', async () => {
+    (global.fetch as any)
+      .mockResolvedValueOnce({ ok: false, statusText: 'Not Found', text: async () => '' })
+      .mockResolvedValueOnce({ ok: true, text: async () => '# Title\n' });
+
+    renderViewer({ markdownPreviewMode: 'split-preview' });
+
+    expect(
+      await screen.findByText('Base content unavailable — showing partial preview.'),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Title' })).toBeInTheDocument();
+    expect(screen.queryByTestId('markdown-split-preview')).not.toBeInTheDocument();
+  });
+
   it('does not fetch when both refs are stdin', async () => {
     renderViewer({ baseCommitish: 'stdin', targetCommitish: 'stdin' });
 
@@ -704,10 +718,10 @@ describe('MarkdownDiffPreview frontmatter diff', () => {
 
     goToDiffPreview();
 
-    expect(await screen.findAllByText('title')).toHaveLength(1); // modified → single Before/After row
+    expect(await screen.findAllByText('title')).toHaveLength(2); // modified → a before and an after table
     expect(screen.getByText('Old')).toBeInTheDocument();
     expect(screen.getByText('New')).toBeInTheDocument();
-    expect(screen.getAllByText('published')).toHaveLength(1);
+    expect(screen.getAllByText('published')).toHaveLength(2);
     expect(screen.getByText('false')).toBeInTheDocument();
     expect(screen.getByText('true')).toBeInTheDocument();
   });
@@ -731,10 +745,10 @@ describe('MarkdownDiffPreview frontmatter diff', () => {
 
     goToDiffPreview();
 
-    // Frontmatter change is shown in the structured table…
+    // Frontmatter change is shown in the structured tables…
     expect(await screen.findByText('Old')).toBeInTheDocument();
     expect(screen.getByText('New')).toBeInTheDocument();
-    expect(screen.getByText('title')).toBeInTheDocument();
+    expect(screen.getAllByText('title')).toHaveLength(2);
 
     // …and the raw frontmatter delimiters are stripped from the preview blocks,
     // so no stray <hr> is rendered from the `---` lines.

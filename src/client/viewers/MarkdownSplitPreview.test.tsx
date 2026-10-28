@@ -292,18 +292,30 @@ describe('MarkdownSplitPreview unified layout (Diff Preview)', () => {
     expect(screen.getByText('After note')).toBeInTheDocument();
   });
 
-  it('shows a changed frontmatter as one key-by-key table', () => {
-    const { container } = renderPreview({
+  it('shows a changed frontmatter as a before and an after table, each commentable', async () => {
+    const { container, props } = renderPreview({
       layout: 'unified',
       baseContent: '---\ntitle: Old\n---\n\nBody',
       targetContent: '---\ntitle: New\n---\n\nBody',
     });
 
-    expect(screen.getAllByText('title')).toHaveLength(1);
-    expect(screen.getByText('Old')).toBeInTheDocument();
-    expect(screen.getByText('New')).toBeInTheDocument();
-    const frontmatterCell = getCell(container, 'new', 'title');
-    expect(frontmatterCell.querySelector('[data-md-line-start="1"]')).not.toBeNull();
+    expect(getCell(container, 'old', 'Old').getAttribute('data-md-status')).toBe('removed');
+    expect(getCell(container, 'new', 'New').getAttribute('data-md-status')).toBe('added');
+
+    openGutterComment(getCell(container, 'old', 'Old'), 'Old');
+    fireEvent.change(screen.getByPlaceholderText('Leave a comment...'), {
+      target: { value: 'Keep the old title' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
+
+    await waitFor(() =>
+      expect(props.onAddComment).toHaveBeenCalledWith(
+        [1, 3],
+        'Keep the old title',
+        '---\ntitle: Old\n---',
+        'old',
+      ),
+    );
   });
 });
 

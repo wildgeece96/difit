@@ -565,14 +565,16 @@ export function MarkdownDiffViewer(props: DiffViewerBodyProps) {
     (file.status === 'added' || contents.base !== null) &&
     (file.status === 'deleted' || contents.target !== null);
 
-  // A remembered mode may not fit this file (e.g. stdin has no blobs), so fall back
-  // without overwriting the stored choice.
+  // A remembered mode may not fit this file (e.g. stdin has no blobs, or a fetch failed),
+  // so fall back without overwriting the stored choice.
   const effectiveMode: PreviewMode =
     mode === 'split-preview' && !hasSplitPreview
       ? 'diff'
-      : mode === 'full-preview' && !hasFullPreview && !isPreviewPending
+      : mode === 'split-preview' && !isSplitPreviewReady && !isPreviewPending
         ? 'diff-preview'
-        : mode;
+        : mode === 'full-preview' && !hasFullPreview && !isPreviewPending
+          ? 'diff-preview'
+          : mode;
 
   const commentProps = {
     filePath: file.path,
@@ -613,11 +615,7 @@ export function MarkdownDiffViewer(props: DiffViewerBodyProps) {
             targetLabel={targetCommitish}
           />
         ) : (
-          <div className="p-4 text-sm text-github-text-muted">
-            {isPreviewPending
-              ? 'Loading preview...'
-              : (previewError ?? partialFailureLabel ?? 'Preview unavailable.')}
-          </div>
+          <div className="p-4 text-sm text-github-text-muted">Loading preview...</div>
         ))}
 
       {effectiveMode === 'diff-preview' && isSplitPreviewReady && (

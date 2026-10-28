@@ -131,7 +131,7 @@ const BlockContent = memo(function BlockContent({
   block: MarkdownBlock;
   definitions: string[];
   syntaxTheme?: DiffViewerBodyProps['syntaxTheme'];
-  /** Set in the unified layout: one key-by-key table instead of two snapshots. */
+  /** Set in the unified layout for an added or removed frontmatter: one key-by-key table. */
   frontmatterDiff?: FrontmatterPair;
 }) {
   const components = useMemo(
@@ -200,8 +200,10 @@ const BlockContent = memo(function BlockContent({
   );
 });
 
+// A modified frontmatter renders as two snapshots instead, so each side's lines can take
+// comments; one combined table would only accept new-side comments.
 const getChangedFrontmatter = (row: MarkdownBlockRow): FrontmatterPair | undefined => {
-  if (row.type === 'unchanged') return undefined;
+  if (row.type !== 'added' && row.type !== 'removed') return undefined;
   const pair = { old: blockOnSide(row, 'old'), new: blockOnSide(row, 'new') };
   return (pair.old ?? pair.new)?.kind === 'frontmatter' ? pair : undefined;
 };
@@ -213,7 +215,7 @@ const getCellSides = (
 ): DiffSide[] => {
   if (layout === 'split') return ['old', 'new'];
   if (layout === 'single') return [singleSide];
-  if (row.type === 'modified' && !getChangedFrontmatter(row)) return ['old', 'new'];
+  if (row.type === 'modified') return ['old', 'new'];
   return row.type === 'removed' ? ['old'] : ['new'];
 };
 
