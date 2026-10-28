@@ -77,6 +77,29 @@ const flushDeleteLines = (blocks: PreviewBlock[], pendingDeletes: string[]) => {
   pendingDeletes.length = 0;
 };
 
+// stdin has no blobs to fetch, so each side is rebuilt from the hunks with every line at
+// its own line number, which keeps comment positions right. Lines outside the hunks stay
+// blank, so a modified file shows only its changed regions.
+const buildContentsFromChunks = (chunks: MergedChunk[]): PreviewContents => {
+  const base: string[] = [];
+  const target: string[] = [];
+
+  chunks.forEach((chunk) => {
+    chunk.lines.forEach((line) => {
+      if (line.oldLineNumber && line.type !== 'add') {
+        base[line.oldLineNumber - 1] = line.content;
+      }
+      if (line.newLineNumber && !isDeletionLine(line)) {
+        target[line.newLineNumber - 1] = line.content;
+      }
+    });
+  });
+
+  const toContent = (lines: string[]) =>
+    lines.length > 0 ? Array.from(lines, (line) => line ?? '').join('\n') : null;
+  return { base: toContent(base), target: toContent(target) };
+};
+
 const buildPreviewBlocks = (chunks: MergedChunk[]): PreviewBlock[] => {
   const blocks: PreviewBlock[] = [];
   const pendingDeletes: string[] = [];
@@ -530,6 +553,13 @@ export function MarkdownDiffViewer(props: DiffViewerBodyProps) {
   const isPreviewPending =
     (fetchableSources.base !== null || fetchableSources.target !== null) &&
     (isPreviewLoading || loadedSourcesKey !== previewSourcesKey);
+  const patchContents = useMemo(
+    () =>
+      fetchableSources.base === null && fetchableSources.target === null
+        ? buildContentsFromChunks(mergedChunks)
+        : null,
+    [fetchableSources, mergedChunks],
+  );
   const isSplitPreviewReady =
     loadedSourcesKey === previewSourcesKey &&
     (file.status === 'added' || contents.base !== null) &&
@@ -603,20 +633,32 @@ export function MarkdownDiffViewer(props: DiffViewerBodyProps) {
         <div className="p-4 text-sm text-github-text-muted">Loading preview...</div>
       )}
 
-      {/* Without both files (e.g. stdin) the blocks cannot be aligned: render the hunks. */}
-      {effectiveMode === 'diff-preview' && !isSplitPreviewReady && !isPreviewPending && (
-        <div className="p-4">
-          {partialFailureLabel && (
-            <div className="text-sm text-github-text-muted mb-3">{partialFailureLabel}</div>
-          )}
-          <MarkdownDiffPreview
-            blocks={previewBlocks}
-            syntaxTheme={syntaxTheme}
-            baseContent={contents.base}
-            targetContent={contents.target}
-          />
-        </div>
+      {effectiveMode === 'diff-preview' && patchContents && (
+        <MarkdownSplitPreview
+          {...commentProps}
+          baseContent={file.status === 'added' ? null : patchContents.base}
+          targetContent={file.status === 'deleted' ? null : patchContents.target}
+          layout="unified"
+        />
       )}
+
+      {/* When a fetch fails the blocks cannot be aligned: render the hunks. */}
+      {effectiveMode === 'diff-preview' &&
+        !patchContents &&
+        !isSplitPreviewReady &&
+        !isPreviewPending && (
+          <div className="p-4">
+            {partialFailureLabel && (
+              <div className="text-sm text-github-text-muted mb-3">{partialFailureLabel}</div>
+            )}
+            <MarkdownDiffPreview
+              blocks={previewBlocks}
+              syntaxTheme={syntaxTheme}
+              baseContent={contents.base}
+              targetContent={contents.target}
+            />
+          </div>
+        )}
 
       {effectiveMode === 'full-preview' && (
         <div className="p-4">

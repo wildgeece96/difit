@@ -282,33 +282,27 @@ describe('MarkdownDiffViewer', () => {
     expect(container.querySelector('svg')).toBeInTheDocument();
   });
 
-  it('renders comment-only markdown lines as plain text in the hunk Diff Preview', () => {
-    renderViewer({
-      mergedChunks: htmlCommentChunks,
-      baseCommitish: 'stdin',
-      targetCommitish: 'stdin',
-    });
+  it('renders comment-only markdown lines as plain text in the hunk Diff Preview', async () => {
+    (global.fetch as any).mockResolvedValue({ ok: false, statusText: 'Not Found' });
+    renderViewer({ mergedChunks: htmlCommentChunks });
 
     fireEvent.click(screen.getByRole('button', { name: 'Diff Preview' }));
 
     expect(
-      screen.getByText(
+      await screen.findByText(
         (_, element) =>
           element?.tagName === 'PRE' && element.textContent === '<!-- hidden note -->',
       ),
     ).toBeInTheDocument();
   });
 
-  it('renders changed fenced code blocks without dropping surrounding markdown in the hunk Diff Preview', () => {
-    renderViewer({
-      mergedChunks: codeFenceDiffChunks,
-      baseCommitish: 'stdin',
-      targetCommitish: 'stdin',
-    });
+  it('renders changed fenced code blocks without dropping surrounding markdown in the hunk Diff Preview', async () => {
+    (global.fetch as any).mockResolvedValue({ ok: false, statusText: 'Not Found' });
+    renderViewer({ mergedChunks: codeFenceDiffChunks });
 
     fireEvent.click(screen.getByRole('button', { name: 'Diff Preview' }));
 
-    const oldLine = screen.getByText(
+    const oldLine = await screen.findByText(
       'npx skills add yoshiko-pg/difit # エージェントにスキルを追加',
     );
     const newLine = screen.getByText(
@@ -522,6 +516,86 @@ describe('MarkdownDiffViewer two-side fetch', () => {
     expect(screen.queryByRole('button', { name: 'Split Preview' })).not.toBeInTheDocument();
     expect(screen.queryByTestId('markdown-split-preview')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Diff' })).toBeInTheDocument();
+  });
+
+  it('comments on an added file in the stdin Diff Preview at its source line', async () => {
+    const addedChunks: MergedChunk[] = [
+      {
+        header: '@@ -0,0 +1,3 @@',
+        oldStart: 0,
+        oldLines: 0,
+        newStart: 1,
+        newLines: 3,
+        lines: [
+          { type: 'add', content: '# Title', newLineNumber: 1 },
+          { type: 'add', content: '', newLineNumber: 2 },
+          { type: 'add', content: 'Some text.', newLineNumber: 3 },
+        ],
+        originalIndices: [0],
+        hiddenLinesBefore: 0,
+        hiddenLinesAfter: 0,
+      },
+    ];
+    const onAddComment = vi.fn().mockResolvedValue(undefined);
+
+    renderViewer({
+      file: createFile({ status: 'added', additions: 3, deletions: 0 }),
+      mergedChunks: addedChunks,
+      baseCommitish: 'stdin',
+      targetCommitish: 'stdin',
+      markdownPreviewMode: 'diff-preview',
+      onAddComment,
+    });
+
+    const preview = screen.getByTestId('markdown-unified-preview');
+    fireEvent.mouseMove(within(preview).getByText('Some text.'));
+    fireEvent.mouseDown(within(preview).getByRole('button', { name: 'Add comment on L3' }));
+    fireEvent.change(screen.getByPlaceholderText('Leave a comment...'), {
+      target: { value: 'Clarify' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
+
+    await waitFor(() =>
+      expect(onAddComment).toHaveBeenCalledWith(3, 'Clarify', 'Some text.', 'new'),
+    );
+    expect(global.fetch).toHaveBeenCalledTimes(0);
+  });
+
+  it('keeps file line numbers for a modified file in the stdin Diff Preview', () => {
+    const modifiedChunks: MergedChunk[] = [
+      {
+        header: '@@ -10,2 +10,2 @@',
+        oldStart: 10,
+        oldLines: 2,
+        newStart: 10,
+        newLines: 2,
+        lines: [
+          { type: 'context', content: '## Section', oldLineNumber: 10, newLineNumber: 10 },
+          { type: 'delete', content: 'Old line.', oldLineNumber: 11 },
+          { type: 'add', content: 'New line.', newLineNumber: 11 },
+        ],
+        originalIndices: [0],
+        hiddenLinesBefore: 9,
+        hiddenLinesAfter: 0,
+      },
+    ];
+
+    renderViewer({
+      mergedChunks: modifiedChunks,
+      baseCommitish: 'stdin',
+      targetCommitish: 'stdin',
+      markdownPreviewMode: 'diff-preview',
+    });
+
+    const preview = screen.getByTestId('markdown-unified-preview');
+    const lineStartOf = (text: string) =>
+      within(preview)
+        .getByText(text)
+        .closest('[data-md-line-start]')
+        ?.getAttribute('data-md-line-start');
+    expect(lineStartOf('Section')).toBe('10');
+    expect(lineStartOf('Old line.')).toBe('11');
+    expect(lineStartOf('New line.')).toBe('11');
   });
 
   it('refetches the blobs when the diff is reloaded', async () => {
